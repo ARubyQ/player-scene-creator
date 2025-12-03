@@ -82,6 +82,23 @@ class MapManagerApp extends Application {
             .pm-actions { display: flex; gap: 5px; }
             .pm-s-btn { width: 28px; height: 28px; border: 1px solid #000; border-radius: 3px; cursor: pointer; display: flex; align-items: center; justify-content: center; color: white; }
             .b-go { background: #3b6e8a; } .b-move { background: #8a6e3b; } .b-edit { background: #444; } .b-del { background: #782e22; }
+
+            /* Стили для чекбоксов */
+            .pm-checkbox-row {
+                display: flex; 
+                justify-content: space-between; 
+                background: rgba(0,0,0,0.2); 
+                padding: 5px 10px; 
+                border-radius: 4px; 
+                margin-top: 5px;
+            }
+            .pm-checkbox-row label {
+                display: flex; 
+                align-items: center; 
+                gap: 5px; 
+                cursor: pointer;
+                font-size: 0.9em;
+            }
         </style>`;
 
         let html = `${css}<div class="pm-container">
@@ -189,9 +206,49 @@ class MapManagerApp extends Application {
         const openMapDialog = (folderId) => {
             new Dialog({
                 title: "Новая карта",
-                content: `<form style="margin-bottom:10px"><div class="form-group"><label>Название</label><input type="text" id="mn" autofocus></div><div class="form-group"><label>Фон</label><div style="display:flex;gap:5px"><input type="text" id="mi"><button type="button" id="fb" style="flex:0 0 30px"><i class="fas fa-folder"></i></button></div></div></form>`,
+                content: `
+                <form style="margin-bottom:10px">
+                    <div class="form-group">
+                        <label>Название</label>
+                        <input type="text" id="mn" autofocus>
+                    </div>
+                    <div class="form-group">
+                        <label>Фон</label>
+                        <div style="display:flex;gap:5px">
+                            <input type="text" id="mi">
+                            <button type="button" id="fb" style="flex:0 0 30px"><i class="fas fa-folder"></i></button>
+                        </div>
+                    </div>
+                    <div class="pm-checkbox-row">
+                        <label title="Активировать сцену сразу после создания"><input type="checkbox" id="m-act"> Перейти</label>
+                        <label title="Включить видимую сетку"><input type="checkbox" id="m-grid"> Сетка</label>
+                        <label title="Включить туман войны и зрение"><input type="checkbox" id="m-vis"> Зрение</label>
+                    </div>
+                </form>`,
                 render: (h) => h.find("#fb").click(() => new FilePicker({type: "image", current: "assets/playermaps", callback: p => h.find("#mi").val(p)}).render(true)),
-                buttons: { yes: { label: "Создать", callback: async (h) => { if (h.find("#mn").val()) { await API.createScene(h.find("#mn").val(), h.find("#mi").val(), folderId, game.user.name); this.render(); }}}}
+                buttons: {
+                    yes: {
+                        label: "Создать",
+                        icon: '<i class="fas fa-check"></i>',
+                        callback: async (h) => {
+                            const name = h.find("#mn").val();
+                            const img = h.find("#mi").val();
+                            
+                            // Считываем значения чекбоксов (false по умолчанию)
+                            const options = {
+                                activate: h.find("#m-act").is(":checked"),
+                                grid: h.find("#m-grid").is(":checked"),
+                                vision: h.find("#m-vis").is(":checked")
+                            };
+
+                            if (name) {
+                                // Передаем options в API
+                                await API.createScene(name, img, folderId, game.user.name, options);
+                                this.render();
+                            }
+                        }
+                    }
+                }
             }).render(true);
         };
 
@@ -215,12 +272,10 @@ class MapManagerApp extends Application {
 }
 
 // ================================================================
-// 2. КНОПКИ (ВСТРАИВАЕМ В МЕНЮ ТОКЕНОВ)
+// 2. КНОПКИ
 // ================================================================
 
 Hooks.on("getSceneControlButtons", (controls) => {
-    
-    // --- ВАРИАНТ 1: V13 (Объекты) ---
     if (controls && typeof controls === "object" && !Array.isArray(controls)) {
         const tokenGroup = controls.tokens || controls.token;
         if (tokenGroup && tokenGroup.tools) {
@@ -235,8 +290,6 @@ Hooks.on("getSceneControlButtons", (controls) => {
             return; 
         }
     }
-
-    // --- ВАРИАНТ 2: Старые версии (Массивы) ---
     if (Array.isArray(controls)) {
         const tokenGroup = controls.find(c => c.name === "token");
         if (tokenGroup) {
@@ -305,35 +358,52 @@ Hooks.once("ready", async () => {
         await Folder.create({ name: name, type: "Scene", folder: parentId || root.id, color: "#ff9900", sorting: "a" });
     });
 
-    // === СОЗДАНИЕ СЦЕНЫ (БЕЗ АКТИВАЦИИ + БЕЗ СЕТКИ) ===
-    socket.register("createScene", async (name, imgPath, folderId, user) => {
+    // === СОЗДАНИЕ СЦЕНЫ (С НОВЫМИ ПАРАМЕТРАМИ) ===
+    socket.register("createScene", async (name, imgPath, folderId, user, options = {}) => {
         if (!game.users.activeGM) return;
         const root = await getRootFolder();
         let width = 3000, height = 3000, bg = null;
+        
         if (imgPath) {
             try {
                 const tex = await loadTexture(imgPath);
                 width = tex.baseTexture.width; height = tex.baseTexture.height; bg = imgPath;
             } catch (e) { console.error("CORS Error:", e); return null; }
         }
-        // Создаем сцену
+
+        // Применяем настройки из options
+        // Если options.grid === true, то альфа 1 (видно), иначе 0 (не видно)
+        const gridAlpha = options.grid ? 1 : 0;
+        // Если options.vision === true, то зрение включено, иначе выключено
+        const vision = options.vision || false;
+
         const s = await Scene.create({
             name: `${name} (${user})`,
-            active: false, // НЕ ПЕРЕХОДИМ НА НЕЕ
+            active: false,
             navigation: true,
-            folder: folderId || root.id, width: width, height: height,
-            tokenVision: false, fog: { exploration: false, resetOnVisibility: true },
+            folder: folderId || root.id,
+            width: width, height: height,
+            
+            // Настройки зрения
+            tokenVision: vision, 
+            fog: { exploration: vision, resetOnVisibility: true },
             globalLight: true, 
-            // ВЫКЛЮЧАЕМ ВИДИМОСТЬ СЕТКИ
+            
+            // Настройки сетки
             grid: { 
                 size: 100, 
                 type: 1, 
-                alpha: 0, // <--- ВОТ ЭТО ДЕЛАЕТ ЕЁ НЕВИДИМОЙ
+                alpha: gridAlpha, // Применяем выбор игрока
                 units: "ft",
                 distance: 5
             },
             background: bg ? { src: bg, offsetX: 0, offsetY: 0 } : undefined
         });
+        
+        // Если игрок поставил галочку "Перейти", активируем сцену
+        if (options.activate) {
+            await s.activate();
+        }
         
         ui.notifications.info(`Игрок ${user} создал карту "${name}".`);
     });
@@ -355,7 +425,8 @@ Hooks.once("ready", async () => {
 
     window.PlayerMapManager = {
         getData: () => socket.executeAsGM("getData"),
-        createScene: (n, i, f, u) => socket.executeAsGM("createScene", n, i, f, u),
+        // Передаем options (5-й аргумент)
+        createScene: (n, i, f, u, opt) => socket.executeAsGM("createScene", n, i, f, u, opt),
         deleteScene: (id) => socket.executeAsGM("deleteScene", id),
         updateImage: (id, i) => socket.executeAsGM("updateSceneImage", id, i),
         createFolder: (n, p) => socket.executeAsGM("createFolder", n, p),
